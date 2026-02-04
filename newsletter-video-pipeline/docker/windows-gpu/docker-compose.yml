@@ -1,0 +1,101 @@
+# Docker Compose for Windows GPU Server (RTX 5090)
+# These services run on the Windows machine and handle GPU-intensive tasks:
+# - Voice Cloning (XTTS-v2)
+# - Avatar Video Generation (MuseTalk + LivePortrait)
+
+version: '3.8'
+
+services:
+  # ============================================================
+  # Voice Cloner - XTTS-v2 based voice cloning
+  # ============================================================
+  voice-cloner:
+    build:
+      context: ../..
+      dockerfile: docker/windows-gpu/Dockerfile.voice-cloner
+    container_name: nvp-voice-cloner
+    ports:
+      - "5002:5002"
+    environment:
+      - VOICE_HOST=0.0.0.0
+      - VOICE_PORT=5002
+      - VOICE_MODEL_NAME=tts_models/multilingual/multi-dataset/xtts_v2
+      - VOICE_DEVICE=cuda
+      - VOICE_USE_DEEPSPEED=true
+      - VOICE_VOICES_DIR=/data/voices
+      - VOICE_TEMP_DIR=/tmp/voice_cloner
+      - NVIDIA_VISIBLE_DEVICES=all
+    volumes:
+      - nvp-data:/data
+      - nvp-models:/models
+      - nvp-temp:/tmp
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+    networks:
+      - nvp-network
+
+  # ============================================================
+  # Avatar Generator - MuseTalk + LivePortrait
+  # ============================================================
+  avatar-generator:
+    build:
+      context: ../..
+      dockerfile: docker/windows-gpu/Dockerfile.avatar-generator
+    container_name: nvp-avatar-generator
+    ports:
+      - "5003:5003"
+    environment:
+      - AVATAR_HOST=0.0.0.0
+      - AVATAR_PORT=5003
+      - AVATAR_DEVICE=cuda
+      - AVATAR_MUSETALK_PATH=/models/musetalk
+      - AVATAR_LIVEPORTRAIT_PATH=/models/liveportrait
+      - AVATAR_AVATARS_DIR=/data/avatars
+      - AVATAR_TEMP_DIR=/tmp/avatar_generator
+      - NVIDIA_VISIBLE_DEVICES=all
+    volumes:
+      - nvp-data:/data
+      - nvp-models:/models
+      - nvp-temp:/tmp
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+    networks:
+      - nvp-network
+
+# ============================================================
+# Volumes
+# ============================================================
+volumes:
+  nvp-data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${DATA_DIR:-C:/nvp/data}
+  nvp-models:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${MODELS_DIR:-C:/nvp/models}
+  nvp-temp:
+    driver: local
+
+# ============================================================
+# Networks
+# ============================================================
+networks:
+  nvp-network:
+    driver: bridge

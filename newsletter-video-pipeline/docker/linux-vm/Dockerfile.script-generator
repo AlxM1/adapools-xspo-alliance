@@ -1,0 +1,28 @@
+# Dockerfile for Script Generator
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /app
+
+# Install dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy and install Python dependencies
+COPY pyproject.toml ./
+RUN pip install --upgrade pip && \
+    pip install fastapi uvicorn pydantic pydantic-settings loguru httpx \
+    openai anthropic
+
+# Copy application code
+COPY configs/ ./configs/
+COPY services/script-generator/ ./services/script_generator/
+COPY services/__init__.py ./services/
+
+EXPOSE 5007
+
+CMD ["python", "-m", "uvicorn", "services.script_generator.app:app", "--host", "0.0.0.0", "--port", "5007"]

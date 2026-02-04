@@ -1,0 +1,30 @@
+# Dockerfile for Video Processor
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /app
+
+# Install FFmpeg and dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy and install Python dependencies
+COPY pyproject.toml ./
+RUN pip install --upgrade pip && \
+    pip install fastapi uvicorn pydantic pydantic-settings loguru ffmpeg-python
+
+# Copy application code
+COPY configs/ ./configs/
+COPY services/video-processor/ ./services/video_processor/
+COPY services/__init__.py ./services/
+
+# Create directories
+RUN mkdir -p /data/videos/output /tmp/video_processor
+
+EXPOSE 5005
+
+CMD ["python", "-m", "uvicorn", "services.video_processor.app:app", "--host", "0.0.0.0", "--port", "5005"]

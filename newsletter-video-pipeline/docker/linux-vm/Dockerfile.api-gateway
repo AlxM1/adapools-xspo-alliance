@@ -1,0 +1,30 @@
+# Dockerfile for API Gateway
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /app
+
+# Install dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy and install Python dependencies
+COPY pyproject.toml ./
+RUN pip install --upgrade pip && \
+    pip install fastapi uvicorn httpx pydantic pydantic-settings loguru redis
+
+# Copy application code
+COPY configs/ ./configs/
+COPY services/api-gateway/ ./services/api_gateway/
+COPY services/__init__.py ./services/
+
+# Create directories
+RUN mkdir -p /data/videos/output /tmp/pipeline
+
+EXPOSE 8000
+
+CMD ["python", "-m", "uvicorn", "services.api_gateway.app:app", "--host", "0.0.0.0", "--port", "8000"]

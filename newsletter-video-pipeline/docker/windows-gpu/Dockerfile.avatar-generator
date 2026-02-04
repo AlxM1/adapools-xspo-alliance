@@ -1,0 +1,72 @@
+# Dockerfile for Avatar Generator (MuseTalk + LivePortrait)
+# Requires NVIDIA GPU with CUDA support
+FROM nvidia/cuda:12.1-cudnn8-runtime-ubuntu22.04
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    DEBIAN_FRONTEND=noninteractive
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.11 \
+    python3.11-venv \
+    python3.11-dev \
+    python3-pip \
+    ffmpeg \
+    libsm6 \
+    libxext6 \
+    libgl1-mesa-glx \
+    libglib2.0-0 \
+    git \
+    curl \
+    wget \
+    unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set Python 3.11 as default
+RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1 && \
+    update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1
+
+WORKDIR /app
+
+# Install PyTorch with CUDA support
+RUN pip install --upgrade pip && \
+    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+
+# Install core dependencies
+RUN pip install \
+    fastapi uvicorn pydantic pydantic-settings loguru \
+    aiofiles python-multipart httpx \
+    numpy scipy pillow \
+    opencv-python-headless \
+    mediapipe \
+    transformers accelerate safetensors \
+    diffusers \
+    onnxruntime-gpu
+
+# Clone and install MuseTalk
+RUN git clone https://github.com/TMElyralab/MuseTalk.git /models/musetalk && \
+    cd /models/musetalk && \
+    pip install -r requirements.txt || true
+
+# Clone and install LivePortrait
+RUN git clone https://github.com/KwaiVGI/LivePortrait.git /models/liveportrait && \
+    cd /models/liveportrait && \
+    pip install -r requirements.txt || true
+
+# Copy application code
+COPY configs/ ./configs/
+COPY services/avatar-generator/ ./services/avatar_generator/
+COPY services/__init__.py ./services/
+
+# Create directories
+RUN mkdir -p /data/avatars /tmp/avatar_generator /models
+
+EXPOSE 5003
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=30s --start-period=120s --retries=3 \
+    CMD curl -f http://localhost:5003/health || exit 1
+
+CMD ["python", "-m", "uvicorn", "services.avatar_generator.app:app", "--host", "0.0.0.0", "--port", "5003"]

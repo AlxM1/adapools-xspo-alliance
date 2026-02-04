@@ -1,0 +1,158 @@
+# Docker Compose for Linux VM Services
+# These services run on the Linux VM and handle:
+# - API Gateway (orchestration)
+# - Video Processing
+# - Social Publishing
+# - Script Generation
+
+version: '3.8'
+
+services:
+  # ============================================================
+  # API Gateway - Main Entry Point
+  # ============================================================
+  api-gateway:
+    build:
+      context: ../..
+      dockerfile: docker/linux-vm/Dockerfile.api-gateway
+    container_name: nvp-api-gateway
+    ports:
+      - "8000:8000"
+    environment:
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+      - GPU_VOICE_URL=${GPU_HOST:-192.168.1.100}:5002
+      - GPU_AVATAR_URL=${GPU_HOST:-192.168.1.100}:5003
+      - VIDEO_PROCESSOR_URL=http://video-processor:5005
+      - SOCIAL_PUBLISHER_URL=http://social-publisher:5006
+      - SCRIPT_GENERATOR_URL=http://script-generator:5007
+      - OUTPUT_DIR=/data/videos/output
+      - TEMP_DIR=/tmp/pipeline
+    volumes:
+      - nvp-data:/data
+      - nvp-configs:/configs
+      - nvp-temp:/tmp
+    depends_on:
+      - video-processor
+      - social-publisher
+      - script-generator
+      - redis
+    restart: unless-stopped
+    networks:
+      - nvp-network
+
+  # ============================================================
+  # Video Processor - FFmpeg based processing
+  # ============================================================
+  video-processor:
+    build:
+      context: ../..
+      dockerfile: docker/linux-vm/Dockerfile.video-processor
+    container_name: nvp-video-processor
+    ports:
+      - "5005:5005"
+    environment:
+      - VIDEO_HOST=0.0.0.0
+      - VIDEO_PORT=5005
+      - VIDEO_FFMPEG_PATH=ffmpeg
+      - VIDEO_OUTPUT_DIR=/data/videos/output
+      - VIDEO_TEMP_DIR=/tmp/video_processor
+    volumes:
+      - nvp-data:/data
+      - nvp-temp:/tmp
+    restart: unless-stopped
+    networks:
+      - nvp-network
+
+  # ============================================================
+  # Social Publisher - Multi-platform publishing
+  # ============================================================
+  social-publisher:
+    build:
+      context: ../..
+      dockerfile: docker/linux-vm/Dockerfile.social-publisher
+    container_name: nvp-social-publisher
+    ports:
+      - "5006:5006"
+    environment:
+      - SOCIAL_HOST=0.0.0.0
+      - SOCIAL_PORT=5006
+      - SOCIAL_CREDENTIALS_DIR=/data/credentials
+      - SOCIAL_TEMP_DIR=/tmp/social_publisher
+      - SOCIAL_YOUTUBE_CLIENT_SECRETS_FILE=/configs/youtube_client_secrets.json
+      - SOCIAL_TIKTOK_CLIENT_KEY=${TIKTOK_CLIENT_KEY:-}
+      - SOCIAL_TIKTOK_CLIENT_SECRET=${TIKTOK_CLIENT_SECRET:-}
+      - SOCIAL_TIKTOK_REDIRECT_URI=${TIKTOK_REDIRECT_URI:-http://localhost:8000/auth/tiktok/callback}
+    volumes:
+      - nvp-data:/data
+      - nvp-configs:/configs
+      - nvp-temp:/tmp
+    restart: unless-stopped
+    networks:
+      - nvp-network
+
+  # ============================================================
+  # Script Generator - Newsletter to script conversion
+  # ============================================================
+  script-generator:
+    build:
+      context: ../..
+      dockerfile: docker/linux-vm/Dockerfile.script-generator
+    container_name: nvp-script-generator
+    ports:
+      - "5007:5007"
+    environment:
+      - SCRIPT_HOST=0.0.0.0
+      - SCRIPT_PORT=5007
+      - SCRIPT_LLM_PROVIDER=${LLM_PROVIDER:-local}
+      - SCRIPT_LLM_MODEL=${LLM_MODEL:-qwen2.5:7b}
+      - SCRIPT_LLM_BASE_URL=${OLLAMA_URL:-http://host.docker.internal:11434}
+      - SCRIPT_OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - SCRIPT_ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    networks:
+      - nvp-network
+
+  # ============================================================
+  # Redis - Job Queue (optional, for async processing)
+  # ============================================================
+  redis:
+    image: redis:7-alpine
+    container_name: nvp-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - nvp-redis:/data
+    restart: unless-stopped
+    networks:
+      - nvp-network
+
+# ============================================================
+# Volumes
+# ============================================================
+volumes:
+  nvp-data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${DATA_DIR:-/opt/nvp/data}
+  nvp-configs:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${CONFIG_DIR:-/opt/nvp/configs}
+  nvp-temp:
+    driver: local
+  nvp-redis:
+    driver: local
+
+# ============================================================
+# Networks
+# ============================================================
+networks:
+  nvp-network:
+    driver: bridge

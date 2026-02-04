@@ -1,0 +1,32 @@
+# Dockerfile for Social Publisher
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /app
+
+# Install dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy and install Python dependencies
+COPY pyproject.toml ./
+RUN pip install --upgrade pip && \
+    pip install fastapi uvicorn pydantic pydantic-settings loguru httpx \
+    google-api-python-client google-auth-oauthlib \
+    tweepy instagrapi
+
+# Copy application code
+COPY configs/ ./configs/
+COPY services/social-publisher/ ./services/social_publisher/
+COPY services/__init__.py ./services/
+
+# Create directories
+RUN mkdir -p /data/credentials /tmp/social_publisher
+
+EXPOSE 5006
+
+CMD ["python", "-m", "uvicorn", "services.social_publisher.app:app", "--host", "0.0.0.0", "--port", "5006"]

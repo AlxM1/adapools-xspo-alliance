@@ -1,0 +1,56 @@
+# Dockerfile for Voice Cloner (XTTS-v2)
+# Requires NVIDIA GPU with CUDA support
+FROM nvidia/cuda:12.1-cudnn8-runtime-ubuntu22.04
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    DEBIAN_FRONTEND=noninteractive
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.11 \
+    python3.11-venv \
+    python3-pip \
+    ffmpeg \
+    libsndfile1 \
+    git \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set Python 3.11 as default
+RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1 && \
+    update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1
+
+WORKDIR /app
+
+# Install PyTorch with CUDA support
+RUN pip install --upgrade pip && \
+    pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu121
+
+# Install TTS (Coqui) and dependencies
+RUN pip install coqui-tts[all] \
+    fastapi uvicorn pydantic pydantic-settings loguru \
+    aiofiles python-multipart
+
+# Install DeepSpeed for faster inference (optional but recommended)
+RUN pip install deepspeed || echo "DeepSpeed installation failed, continuing without it"
+
+# Copy application code
+COPY configs/ ./configs/
+COPY services/voice-cloner/ ./services/voice_cloner/
+COPY services/__init__.py ./services/
+
+# Create directories
+RUN mkdir -p /data/voices /tmp/voice_cloner /models
+
+# Pre-download XTTS model (optional - can be done at runtime)
+# RUN python -c "from TTS.api import TTS; TTS('tts_models/multilingual/multi-dataset/xtts_v2')"
+
+EXPOSE 5002
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=30s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:5002/health || exit 1
+
+CMD ["python", "-m", "uvicorn", "services.voice_cloner.app:app", "--host", "0.0.0.0", "--port", "5002"]
