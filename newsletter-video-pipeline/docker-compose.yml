@@ -164,6 +164,162 @@ services:
       - nvp-network
 
   # ============================================================
+  # Content Ingestion (RSS, Email, Webhooks)
+  # ============================================================
+  content-ingestion:
+    build:
+      context: ./services/content-ingestion
+      dockerfile: Dockerfile
+    container_name: nvp-content-ingestion
+    restart: unless-stopped
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - API_GATEWAY_URL=http://api-gateway:8000
+      - LLM_URL=${OLLAMA_URL:-http://host.docker.internal:11434}
+      - LLM_MODEL=${LLM_MODEL:-qwen2.5:7b}
+    volumes:
+      - ./logs/content-ingestion:/app/logs
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5010/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - nvp-network
+
+  # ============================================================
+  # Caption Generator
+  # ============================================================
+  caption-generator:
+    build:
+      context: ./services/caption-generator
+      dockerfile: Dockerfile
+    container_name: nvp-caption-generator
+    restart: unless-stopped
+    environment:
+      - GPU_HOST=${GPU_HOST:-192.168.1.100}
+      - WHISPER_URL=http://${GPU_HOST:-192.168.1.100}:9000
+      - OUTPUT_DIR=/app/output
+      - FFMPEG_PATH=ffmpeg
+    volumes:
+      - ./data/captions:/app/output
+      - ./logs/caption-generator:/app/logs
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5011/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - nvp-network
+
+  # ============================================================
+  # Media Library (B-roll, Music, Assets)
+  # ============================================================
+  media-library:
+    build:
+      context: ./services/media-library
+      dockerfile: Dockerfile
+    container_name: nvp-media-library
+    restart: unless-stopped
+    environment:
+      - PEXELS_API_KEY=${PEXELS_API_KEY}
+      - PIXABAY_API_KEY=${PIXABAY_API_KEY}
+      - BRAND_ASSETS_DIR=/app/brand_assets
+    volumes:
+      - ./data/media:/app/media
+      - ./data/brand_assets:/app/brand_assets
+      - ./logs/media-library:/app/logs
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5012/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - nvp-network
+
+  # ============================================================
+  # Analytics Service
+  # ============================================================
+  analytics:
+    build:
+      context: ./services/analytics
+      dockerfile: Dockerfile
+    container_name: nvp-analytics
+    restart: unless-stopped
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-nvp}:${POSTGRES_PASSWORD:-nvp_password}@postgres:5432/${POSTGRES_DB:-newsletter_video_pipeline}
+      - REDIS_URL=redis://redis:6379
+    volumes:
+      - ./logs/analytics:/app/logs
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5013/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - nvp-network
+
+  # ============================================================
+  # Thumbnail Generator
+  # ============================================================
+  thumbnail-generator:
+    build:
+      context: ./services/thumbnail-generator
+      dockerfile: Dockerfile
+    container_name: nvp-thumbnail-generator
+    restart: unless-stopped
+    environment:
+      - OUTPUT_DIR=/app/thumbnails
+      - FFMPEG_PATH=ffmpeg
+    volumes:
+      - ./data/thumbnails:/app/thumbnails
+      - ./logs/thumbnail-generator:/app/logs
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5014/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - nvp-network
+
+  # ============================================================
+  # Notifications Service
+  # ============================================================
+  notifications:
+    build:
+      context: ./services/notifications
+      dockerfile: Dockerfile
+    container_name: nvp-notifications
+    restart: unless-stopped
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-nvp}:${POSTGRES_PASSWORD:-nvp_password}@postgres:5432/${POSTGRES_DB:-newsletter_video_pipeline}
+      - SMTP_HOST=${SMTP_HOST}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USER=${SMTP_USER}
+      - SMTP_PASSWORD=${SMTP_PASSWORD}
+      - SMTP_FROM=${SMTP_FROM:-noreply@videopipeline.local}
+    volumes:
+      - ./logs/notifications:/app/logs
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5015/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - nvp-network
+
+  # ============================================================
   # Celery Workers
   # ============================================================
   celery-worker-pipeline:

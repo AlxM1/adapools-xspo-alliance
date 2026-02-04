@@ -12,6 +12,9 @@ import {
   History,
   PlusCircle,
   Shield,
+  BarChart3,
+  Rss,
+  Image,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/store/auth";
@@ -21,6 +24,9 @@ const navigation = [
   { name: "New Pipeline", href: "/pipeline/new", icon: PlusCircle },
   { name: "History", href: "/pipeline", icon: History },
   { name: "Videos", href: "/videos", icon: Video },
+  { name: "Analytics", href: "/analytics", icon: BarChart3 },
+  { name: "Sources", href: "/sources", icon: Rss },
+  { name: "Thumbnails", href: "/thumbnails", icon: Image },
   { name: "Voices", href: "/voices", icon: Mic },
   { name: "Avatars", href: "/avatars", icon: User },
   { name: "Connections", href: "/connections", icon: Share2 },
