@@ -11,19 +11,97 @@ Provides:
 """
 
 import asyncio
+import ipaddress
 import logging
 import os
+import socket
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime
 from enum import Enum
 from typing import Optional, List, Dict
+from urllib.parse import urlparse
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, EmailStr
 import httpx
 import uvicorn
+
+
+# ============================================================
+# SSRF Protection
+# ============================================================
+
+class SSRFError(Exception):
+    """Raised when URL validation fails for SSRF protection."""
+    pass
+
+
+_BLOCKED_HOSTNAMES = {
+    "localhost", "127.0.0.1", "::1", "0.0.0.0",
+    "metadata.google.internal", "169.254.169.254",
+}
+
+# Allowed webhook hosts (Slack and Discord domains)
+_ALLOWED_WEBHOOK_HOSTS = {
+    "hooks.slack.com",
+    "discord.com",
+    "discordapp.com",
+}
+
+
+def _validate_webhook_url(url: str, allow_any_https: bool = False) -> str:
+    """
+    Validate webhook URL to prevent SSRF attacks.
+
+    For known services (Slack, Discord), we validate against their domains.
+    For custom webhooks, we block internal addresses.
+    """
+    if not url:
+        raise SSRFError("URL is required")
+
+    parsed = urlparse(url)
+
+    # Webhooks should use HTTPS
+    if parsed.scheme.lower() != "https":
+        raise SSRFError("Webhook URLs must use HTTPS")
+
+    hostname = parsed.hostname
+    if not hostname:
+        raise SSRFError("URL must contain a hostname")
+
+    hostname_lower = hostname.lower()
+
+    # Check if it's a known service
+    if hostname_lower in _ALLOWED_WEBHOOK_HOSTS:
+        return url
+
+    # For custom webhooks, validate more strictly
+    if hostname_lower in _BLOCKED_HOSTNAMES:
+        raise SSRFError(f"Access to hostname '{hostname}' is not allowed")
+
+    # Check if hostname is an IP address
+    try:
+        ip = ipaddress.ip_address(hostname)
+        if ip.is_loopback or ip.is_private or ip.is_reserved:
+            raise SSRFError("Access to internal addresses is not allowed")
+    except ValueError:
+        # Resolve hostname and check IPs
+        try:
+            infos = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC)
+            for info in infos:
+                ip_str = info[4][0]
+                try:
+                    ip = ipaddress.ip_address(ip_str)
+                    if ip.is_loopback or ip.is_private:
+                        raise SSRFError("Hostname resolves to internal address")
+                except ValueError:
+                    continue
+        except socket.gaierror:
+            raise SSRFError(f"Could not resolve hostname: {hostname}")
+
+    return url
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -45,12 +123,16 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# CORS configuration - restrict in production
+# Set CORS_ORIGINS env var to comma-separated list of allowed origins
+_cors_origins = os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
+    allow_headers=["Authorization", "Content-Type", "X-API-Key"],
 )
 
 
@@ -484,6 +566,12 @@ async def _send_slack_message(
     fields: Optional[List[Dict]] = None,
 ) -> Dict:
     """Send Slack webhook message."""
+    # Validate URL to prevent SSRF
+    try:
+        _validate_webhook_url(webhook_url)
+    except SSRFError as e:
+        return {"status": "failed", "error": f"Invalid webhook URL: {e}"}
+
     payload = {
         "attachments": [
             {
@@ -517,6 +605,12 @@ async def _send_discord_message(
     fields: Optional[List[Dict]] = None,
 ) -> Dict:
     """Send Discord webhook message."""
+    # Validate URL to prevent SSRF
+    try:
+        _validate_webhook_url(webhook_url)
+    except SSRFError as e:
+        return {"status": "failed", "error": f"Invalid webhook URL: {e}"}
+
     embed = {
         "title": title,
         "description": message,
@@ -589,6 +683,12 @@ async def _send_webhook(
     headers: Optional[Dict[str, str]] = None,
 ) -> Dict:
     """Send generic webhook."""
+    # Validate URL to prevent SSRF
+    try:
+        _validate_webhook_url(url)
+    except SSRFError as e:
+        return {"status": "failed", "error": f"Invalid webhook URL: {e}"}
+
     async with httpx.AsyncClient(timeout=30) as client:
         if method.upper() == "POST":
             response = await client.post(url, json=payload, headers=headers)

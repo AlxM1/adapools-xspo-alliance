@@ -22,8 +22,22 @@ class AuthService:
     """Authentication service for managing users, JWT tokens, and API keys."""
 
     def __init__(self):
-        # JWT settings
-        self.secret_key = os.getenv("JWT_SECRET_KEY", secrets.token_urlsafe(32))
+        # JWT settings - secret key is REQUIRED in production
+        self.secret_key = os.getenv("JWT_SECRET_KEY")
+        if not self.secret_key:
+            env = os.getenv("ENVIRONMENT", "development")
+            if env in ("production", "prod"):
+                raise ValueError(
+                    "JWT_SECRET_KEY environment variable is required in production. "
+                    "Generate one with: python -c \"import secrets; print(secrets.token_urlsafe(64))\""
+                )
+            # Only allow auto-generation in development (with warning)
+            logger.warning(
+                "JWT_SECRET_KEY not set - generating temporary key. "
+                "Tokens will be invalidated on restart. Set JWT_SECRET_KEY for persistence."
+            )
+            self.secret_key = secrets.token_urlsafe(64)
+
         self.algorithm = os.getenv("JWT_ALGORITHM", "HS256")
         self.access_token_expire_minutes = int(os.getenv("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", "30"))
         self.refresh_token_expire_days = int(os.getenv("JWT_REFRESH_TOKEN_EXPIRE_DAYS", "7"))

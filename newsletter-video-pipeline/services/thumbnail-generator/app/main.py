@@ -45,12 +45,16 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# CORS configuration - restrict in production
+# Set CORS_ORIGINS env var to comma-separated list of allowed origins
+_cors_origins = os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
+    allow_headers=["Authorization", "Content-Type", "X-API-Key"],
 )
 
 
@@ -123,6 +127,124 @@ class ThumbnailTemplate(BaseModel):
     category: str  # youtube, tiktok, instagram, general
     style: ThumbnailStyle
     elements: List[dict]
+
+
+# ============================================================
+# File Upload Validation
+# ============================================================
+
+# Maximum file sizes
+MAX_IMAGE_SIZE = 10 * 1024 * 1024  # 10 MB
+MAX_VIDEO_SIZE = 500 * 1024 * 1024  # 500 MB
+
+# Allowed MIME types
+ALLOWED_IMAGE_TYPES = {
+    "image/jpeg", "image/png", "image/gif", "image/webp"
+}
+ALLOWED_VIDEO_TYPES = {
+    "video/mp4", "video/quicktime", "video/x-msvideo", "video/webm"
+}
+
+# Allowed extensions
+ALLOWED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
+ALLOWED_VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".webm"}
+
+
+async def validate_image_upload(file: UploadFile) -> bytes:
+    """Validate and read an uploaded image file."""
+    # Check content type
+    if file.content_type not in ALLOWED_IMAGE_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid image type: {file.content_type}. Allowed: {ALLOWED_IMAGE_TYPES}"
+        )
+
+    # Check extension
+    if file.filename:
+        ext = Path(file.filename).suffix.lower()
+        if ext not in ALLOWED_IMAGE_EXTENSIONS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid image extension: {ext}. Allowed: {ALLOWED_IMAGE_EXTENSIONS}"
+            )
+
+    # Read and check size
+    content = await file.read()
+    if len(content) > MAX_IMAGE_SIZE:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Image too large. Maximum size: {MAX_IMAGE_SIZE // (1024*1024)} MB"
+        )
+
+    # Basic magic number validation
+    if not _is_valid_image(content):
+        raise HTTPException(
+            status_code=400,
+            detail="File does not appear to be a valid image"
+        )
+
+    return content
+
+
+async def validate_video_upload(file: UploadFile) -> bytes:
+    """Validate and read an uploaded video file."""
+    # Check content type
+    if file.content_type not in ALLOWED_VIDEO_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid video type: {file.content_type}. Allowed: {ALLOWED_VIDEO_TYPES}"
+        )
+
+    # Check extension
+    if file.filename:
+        ext = Path(file.filename).suffix.lower()
+        if ext not in ALLOWED_VIDEO_EXTENSIONS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid video extension: {ext}. Allowed: {ALLOWED_VIDEO_EXTENSIONS}"
+            )
+
+    # Read and check size
+    content = await file.read()
+    if len(content) > MAX_VIDEO_SIZE:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Video too large. Maximum size: {MAX_VIDEO_SIZE // (1024*1024)} MB"
+        )
+
+    return content
+
+
+def _is_valid_image(content: bytes) -> bool:
+    """Check if content appears to be a valid image using magic numbers."""
+    if len(content) < 8:
+        return False
+
+    # JPEG
+    if content[:2] == b'\xff\xd8':
+        return True
+    # PNG
+    if content[:8] == b'\x89PNG\r\n\x1a\n':
+        return True
+    # GIF
+    if content[:6] in (b'GIF87a', b'GIF89a'):
+        return True
+    # WebP
+    if content[:4] == b'RIFF' and content[8:12] == b'WEBP':
+        return True
+
+    return False
+
+
+def _sanitize_filename(filename: str) -> str:
+    """Sanitize filename to prevent path traversal."""
+    if not filename:
+        return "upload"
+    # Remove path separators and get just the filename
+    name = Path(filename).name
+    # Remove any dangerous characters
+    name = "".join(c for c in name if c.isalnum() or c in "._-")
+    return name or "upload"
 
 
 # ============================================================
@@ -231,16 +353,20 @@ async def generate_from_video(
     Generate thumbnail from video file.
     Can auto-select the best frame or use a specific timestamp.
     """
+    # Validate video upload
+    content = await validate_video_upload(video_file)
+
     thumbnail_id = str(uuid.uuid4())
 
     # Save uploaded video temporarily
     output_dir = Path(os.getenv("OUTPUT_DIR", "/tmp/thumbnails"))
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    video_path = output_dir / f"{thumbnail_id}_video{Path(video_file.filename).suffix}"
+    # Use sanitized filename extension
+    safe_ext = Path(_sanitize_filename(video_file.filename or "video.mp4")).suffix or ".mp4"
+    video_path = output_dir / f"{thumbnail_id}_video{safe_ext}"
 
     with open(video_path, "wb") as f:
-        content = await video_file.read()
         f.write(content)
 
     try:
@@ -291,16 +417,20 @@ async def generate_with_face(
     Generate thumbnail featuring a face image.
     Applies enhancement and optimal positioning.
     """
+    # Validate image upload
+    content = await validate_image_upload(face_image)
+
     thumbnail_id = str(uuid.uuid4())
 
     # Save uploaded image
     output_dir = Path(os.getenv("OUTPUT_DIR", "/tmp/thumbnails"))
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    face_path = output_dir / f"{thumbnail_id}_face{Path(face_image.filename).suffix}"
+    # Use sanitized filename extension
+    safe_ext = Path(_sanitize_filename(face_image.filename or "face.png")).suffix or ".png"
+    face_path = output_dir / f"{thumbnail_id}_face{safe_ext}"
 
     with open(face_path, "wb") as f:
-        content = await face_image.read()
         f.write(content)
 
     try:
@@ -400,6 +530,53 @@ async def apply_template(
 
 
 # ============================================================
+# Security Utilities
+# ============================================================
+
+import re
+
+# Valid thumbnail ID pattern: UUID or UUID with variant suffix
+_VALID_THUMBNAIL_ID = re.compile(r'^[a-f0-9\-]{8,}(_v\d+)?$', re.IGNORECASE)
+
+
+def _sanitize_thumbnail_id(thumbnail_id: str) -> str:
+    """
+    Sanitize thumbnail ID to prevent path traversal attacks.
+
+    Valid IDs are UUIDs optionally followed by _v1, _v2, etc. for variants.
+    """
+    # Strip any path separators or parent directory references
+    sanitized = thumbnail_id.replace("/", "").replace("\\", "").replace("..", "")
+
+    # Validate format
+    if not _VALID_THUMBNAIL_ID.match(sanitized):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid thumbnail ID format"
+        )
+
+    return sanitized
+
+
+def _get_safe_file_path(output_dir: Path, thumbnail_id: str, suffix: str = ".png") -> Path:
+    """
+    Get a safe file path, ensuring it stays within the output directory.
+    """
+    sanitized_id = _sanitize_thumbnail_id(thumbnail_id)
+    file_path = (output_dir / f"{sanitized_id}{suffix}").resolve()
+
+    # Ensure the resolved path is within the output directory
+    output_dir_resolved = output_dir.resolve()
+    if not str(file_path).startswith(str(output_dir_resolved)):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid thumbnail path"
+        )
+
+    return file_path
+
+
+# ============================================================
 # Download Endpoints
 # ============================================================
 
@@ -407,7 +584,7 @@ async def apply_template(
 async def download_thumbnail(thumbnail_id: str):
     """Download generated thumbnail."""
     output_dir = Path(os.getenv("OUTPUT_DIR", "/tmp/thumbnails"))
-    file_path = output_dir / f"{thumbnail_id}.png"
+    file_path = _get_safe_file_path(output_dir, thumbnail_id, ".png")
 
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="Thumbnail not found")
@@ -419,11 +596,11 @@ async def download_thumbnail(thumbnail_id: str):
 async def download_thumbnail_preview(thumbnail_id: str):
     """Download thumbnail preview (lower resolution)."""
     output_dir = Path(os.getenv("OUTPUT_DIR", "/tmp/thumbnails"))
-    file_path = output_dir / f"{thumbnail_id}_preview.png"
+    file_path = _get_safe_file_path(output_dir, thumbnail_id, "_preview.png")
 
     if not file_path.exists():
         # Fall back to main thumbnail
-        file_path = output_dir / f"{thumbnail_id}.png"
+        file_path = _get_safe_file_path(output_dir, thumbnail_id, ".png")
 
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="Thumbnail not found")

@@ -13,6 +13,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from database import get_db, User, UserRole
 from .service import auth_service
 from .dependencies import get_current_user, get_current_active_user, get_current_admin_user
+from .rate_limiter import (
+    login_limiter,
+    register_limiter,
+    get_client_ip,
+)
 
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
@@ -97,9 +102,15 @@ class APIKeyCreatedResponse(BaseModel):
 @router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
 async def register(
     request: RegisterRequest,
+    req: Request,
     db: AsyncSession = Depends(get_db),
 ):
     """Register a new user account."""
+    client_ip = get_client_ip(req)
+
+    # Check rate limit before processing
+    register_limiter.check_rate_limit(client_ip, "register")
+
     try:
         user = await auth_service.create_user(
             db=db,
@@ -108,8 +119,12 @@ async def register(
             password=request.password,
             full_name=request.full_name,
         )
+        # Record successful registration
+        register_limiter.record_attempt(client_ip, "register", success=True)
         return user
     except ValueError as e:
+        # Record failed attempt
+        register_limiter.record_attempt(client_ip, "register", success=False)
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
 
@@ -120,6 +135,12 @@ async def login(
     db: AsyncSession = Depends(get_db),
 ):
     """Login with email/username and password."""
+    client_ip = get_client_ip(req)
+
+    # Check rate limit by both IP and username/email to prevent enumeration
+    login_limiter.check_rate_limit(client_ip, "login")
+    login_limiter.check_rate_limit(request.email_or_username, "login")
+
     user = await auth_service.authenticate_user(
         db=db,
         email_or_username=request.email_or_username,
@@ -127,6 +148,9 @@ async def login(
     )
 
     if not user:
+        # Record failed attempt for both IP and identifier
+        login_limiter.record_attempt(client_ip, "login", success=False)
+        login_limiter.record_attempt(request.email_or_username, "login", success=False)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid credentials",
@@ -138,13 +162,17 @@ async def login(
             detail="Account is disabled",
         )
 
+    # Record successful login
+    login_limiter.record_attempt(client_ip, "login", success=True)
+    login_limiter.record_attempt(request.email_or_username, "login", success=True)
+
     # Create tokens
     access_token = auth_service.create_access_token(user)
     refresh_token = await auth_service.create_refresh_token(
         db=db,
         user=user,
         device_info=req.headers.get("User-Agent"),
-        ip_address=req.client.host if req.client else None,
+        ip_address=get_client_ip(req),
     )
 
     return TokenResponse(

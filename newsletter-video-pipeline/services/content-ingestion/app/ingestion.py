@@ -8,10 +8,13 @@ import imaplib
 import email
 import re
 import uuid
+import ipaddress
+import socket
 from datetime import datetime, timedelta
 from email.header import decode_header
-from typing import Optional
+from typing import Optional, Set
 from html import unescape
+from urllib.parse import urlparse
 
 import aiohttp
 import feedparser
@@ -19,6 +22,76 @@ from bs4 import BeautifulSoup
 
 from .content_scorer import ContentScorer
 from .queue import ContentQueue, ContentItem
+
+
+# ============================================================
+# SSRF Protection
+# ============================================================
+
+class SSRFError(Exception):
+    """Raised when URL validation fails for SSRF protection."""
+    pass
+
+
+# Private IP ranges that should be blocked
+_PRIVATE_IP_RANGES = [
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("169.254.0.0/16"),
+    ipaddress.ip_network("::1/128"),
+    ipaddress.ip_network("fc00::/7"),
+    ipaddress.ip_network("fe80::/10"),
+    ipaddress.ip_network("0.0.0.0/8"),
+]
+
+_BLOCKED_HOSTNAMES = {
+    "localhost", "127.0.0.1", "::1", "0.0.0.0",
+    "metadata.google.internal", "169.254.169.254",
+}
+
+
+def _validate_feed_url(url: str) -> str:
+    """Validate RSS feed URL to prevent SSRF attacks."""
+    if not url:
+        raise SSRFError("URL is required")
+
+    parsed = urlparse(url)
+
+    # Only allow http/https
+    if parsed.scheme.lower() not in ("http", "https"):
+        raise SSRFError(f"URL scheme '{parsed.scheme}' is not allowed")
+
+    hostname = parsed.hostname
+    if not hostname:
+        raise SSRFError("URL must contain a hostname")
+
+    # Check blocked hostnames
+    if hostname.lower() in _BLOCKED_HOSTNAMES:
+        raise SSRFError(f"Access to hostname '{hostname}' is not allowed")
+
+    # Check if hostname is an IP address
+    try:
+        ip = ipaddress.ip_address(hostname)
+        if ip.is_loopback or ip.is_private or ip.is_reserved:
+            raise SSRFError("Access to internal addresses is not allowed")
+    except ValueError:
+        # Resolve hostname and check all IPs
+        try:
+            infos = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC)
+            for info in infos:
+                ip_str = info[4][0]
+                try:
+                    ip = ipaddress.ip_address(ip_str)
+                    if ip.is_loopback or ip.is_private:
+                        raise SSRFError(f"Hostname resolves to internal address")
+                except ValueError:
+                    continue
+        except socket.gaierror:
+            raise SSRFError(f"Could not resolve hostname: {hostname}")
+
+    return url
 
 
 class RSSIngester:
@@ -34,11 +107,14 @@ class RSSIngester:
 
     async def add_feed(self, feed_data) -> dict:
         """Add a new RSS feed subscription."""
+        # Validate URL to prevent SSRF
+        validated_url = _validate_feed_url(str(feed_data.url))
+
         feed_id = str(uuid.uuid4())
 
         feed = {
             "id": feed_id,
-            "url": str(feed_data.url),
+            "url": validated_url,
             "name": feed_data.name,
             "check_interval_minutes": feed_data.check_interval_minutes,
             "auto_process": feed_data.auto_process,
@@ -82,6 +158,9 @@ class RSSIngester:
             return
 
         try:
+            # Re-validate URL on each check to prevent DNS rebinding attacks
+            _validate_feed_url(feed["url"])
+
             async with aiohttp.ClientSession() as session:
                 async with session.get(feed["url"], timeout=30) as response:
                     content = await response.text()
