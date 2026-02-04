@@ -1,0 +1,80 @@
+# Newsletter Video Pipeline - Prometheus Configuration
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    monitor: 'nvp-monitor'
+
+# Alertmanager configuration
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+          # - alertmanager:9093
+
+# Load rules
+rule_files:
+  - "alert_rules.yml"
+
+# Scrape configurations
+scrape_configs:
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # API Gateway
+  - job_name: 'api-gateway'
+    static_configs:
+      - targets: ['api-gateway:8000']
+    metrics_path: /metrics
+
+  # Video Processor
+  - job_name: 'video-processor'
+    static_configs:
+      - targets: ['video-processor:5005']
+    metrics_path: /metrics
+
+  # Social Publisher
+  - job_name: 'social-publisher'
+    static_configs:
+      - targets: ['social-publisher:5006']
+    metrics_path: /metrics
+
+  # Script Generator
+  - job_name: 'script-generator'
+    static_configs:
+      - targets: ['script-generator:5007']
+    metrics_path: /metrics
+
+  # Voice Cloner (GPU Server)
+  - job_name: 'voice-cloner'
+    static_configs:
+      - targets: ['${GPU_HOST:-192.168.1.100}:5002']
+    metrics_path: /metrics
+
+  # Avatar Generator (GPU Server)
+  - job_name: 'avatar-generator'
+    static_configs:
+      - targets: ['${GPU_HOST:-192.168.1.100}:5003']
+    metrics_path: /metrics
+
+  # Redis
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['redis-exporter:9121']
+
+  # PostgreSQL
+  - job_name: 'postgres'
+    static_configs:
+      - targets: ['postgres-exporter:9187']
+
+  # Node Exporter (system metrics)
+  - job_name: 'node'
+    static_configs:
+      - targets: ['node-exporter:9100']
+
+  # Celery workers
+  - job_name: 'celery'
+    static_configs:
+      - targets: ['celery-exporter:9540']
